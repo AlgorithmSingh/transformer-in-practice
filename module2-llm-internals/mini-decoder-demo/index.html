@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini decoder-only transformer — "the dog bit ___"</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Mini decoder-only transformer</h1>
+      <p class="tag">A toy 1-layer · 1-head model, walked through by hand — image&nbsp;1 → image&nbsp;2 → image&nbsp;3.</p>
+    </div>
+    <div id="headline" class="headline"></div>
+  </header>
+
+  <nav id="crumbs" class="crumbs" aria-label="breadcrumbs"></nav>
+
+  <main class="scene">
+    <div class="scene-head">
+      <div>
+        <h2 id="scene-title"></h2>
+        <p id="scene-subtitle" class="subtitle"></p>
+      </div>
+      <span id="counter" class="counter"></span>
+    </div>
+    <section id="stage" class="stage"></section>
+  </main>
+
+  <footer class="controls">
+    <div class="btns">
+      <button id="prev" class="btn">◀ Prev</button>
+      <button id="play" class="btn primary">▶ Play</button>
+      <button id="next" class="btn">Next ▶</button>
+      <button id="reset" class="btn ghost">⟲ Reset</button>
+    </div>
+    <div id="dots" class="dots" aria-label="scene selector"></div>
+    <div class="keyhint">← / → step · space play/pause · Home/End jump</div>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

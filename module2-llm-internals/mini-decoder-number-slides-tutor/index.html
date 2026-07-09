@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tutor Number Slideshow · Toy Decoder Transformer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Module 2 · LLM internals</div>
+      <h1>Tutor slides · “the dog bit ___” as numbers</h1>
+    </div>
+    <div class="controls" aria-label="slideshow controls">
+      <button id="prevBtn" type="button">← Prev</button>
+      <button id="nextBtn" type="button">Next →</button>
+      <button id="notesBtn" type="button" aria-pressed="true">Notes on</button>
+      <button id="printBtn" type="button">Print / PDF</button>
+    </div>
+  </header>
+
+  <main id="deck" class="deck" aria-live="polite"></main>
+
+  <footer class="statusbar">
+    <div id="progressText">Slide 1</div>
+    <div id="rail" class="rail" aria-hidden="true"></div>
+    <div class="help">Use ← → keys. Press N to toggle notes.</div>
+  </footer>
+
+  <script type="module" src="./slides.js"></script>
+</body>
+</html>
