@@ -916,8 +916,593 @@ So K answers, “am I relevant to your search?” V answers, “if I am relevant
 
 ---
 
+## Returning to the session: recap through slide 7
+
+**User:**
+
+help me catch up, I am returning to this session after a while
+
+**Assistant:**
+
+We had covered slides 1 through 7. The main flow was: token IDs identify vocabulary entries, positions identify sequence order, IDs select embeddings from the model’s learned embedding table, and those embeddings begin the residual stream. Attention adds a contextual update to that stream, and the feed-forward network adds another update.
+
+The largest discussion concerned Q, K, and V. Q expresses what the current token is looking for, K is the searchable handle exposed by each candidate token, and V is the information supplied if that candidate receives attention. Q and K determine where to read; V is what gets read.
+
+Slide 6 showed that Q is created mechanically by multiplying the current token vector by the already-trained W_Q matrix. Slide 7 introduced RoPE, which rotates Q and K according to position so their matching becomes position-aware, while V remains unrotated and carries content.
+
+---
+
+## Slide 7 revisited
+
+**User:**
+
+explain slide 7 again
+
+**Assistant:**
+
+Slide 7 adds order information to attention. Q and K initially encode content-related matching information, but the model also needs to distinguish “the dog bit” from “bit the dog.” RoPE handles this by rotating coordinate pairs inside Q and K according to each token’s position.
+
+In the toy model, h0 and h1 form one pair, while h2 and h3 form another. Position 0 receives no rotation, position 1 receives some rotation, and position 2 receives a larger rotation. Q and K are rotated because they control matching. V is not rotated because it carries the content selected after matching.
+
+RoPE is therefore a preparation step before the Q/K dot products, not the attention score itself.
+
+---
+
+## Recalling the “hidden notes” intuition
+
+**User:**
+
+so in this session i wrote something like attention is like adding notes etc etc, can you point me to what I was saying?
+
+**Assistant:**
+
+The relevant section was “Attention as hidden notes, not a literal longer English sentence.” The user had asked whether attention was “enhancing the sentence into a bigger sentence implicitly, adding richer information to a sequence of tokens.”
+
+The phrasing that captured the intuition was:
+
+> Attention is not literally turning the sentence into a longer English sentence, but internally it is enriching each token’s vector with extra context, almost as if the model is writing hidden notes onto it.
+
+**User:**
+
+can you help me recall similar intuition about what attention is before we move to next slide?
+
+**Assistant:**
+
+Before attention, “bit” is mostly represented as the token “bit.” After attention, its hidden representation can also carry numerical information corresponding to ideas such as “dog is the likely subject” and “this follows a determiner-noun phrase.” These are not literal English notes, but contextual changes to the vector.
+
+Attention is a soft lookup system. Each token uses Q and K to judge which permitted tokens are relevant, then pulls a weighted mixture of their V information into its own position. In a decoder, the final position needs this enriched representation because it is used to predict the next token.
+
+---
+
+## Connection to the apple/orange attention video
+
+**User:**
+
+is this the same thing about [a video explaining ambiguous “apple” moving toward “orange” in a fruit context or toward “phone” in a technology context, using similarity, softmax, Q/K/V, and multi-head attention]?
+
+**Assistant:**
+
+Yes. The video’s image of words moving toward contextually relevant words is another metaphor for the same process. “Apple” moving toward “orange” corresponds to its hidden representation becoming more fruit-like. “Apple” moving toward “phone” corresponds to it becoming more technology-company-like.
+
+The video’s similarity values correspond to Q/K matching. Softmax turns those scores into attention weights. Those weights determine how much V information is mixed into the current position.
+
+The video also reinforces why Q/K and V are separated. Q and K create a space suited to finding relevant relationships. V supplies a potentially different representation suited to the information that should actually be moved into the residual stream.
+
+The visual “movement” is an intuition rather than a literal replacement of the original embedding. In a transformer, the weighted attention output is added to the residual stream, and this enrichment repeats across layers.
+
+---
+
+## Slide 8: RoPE by hand
+
+**User:**
+
+next slide
+
+**Tool activity:**
+
+```console
+$ pdftoppm -f 9 -l 9 -png -r 160 "/Users/ankitsingh/Documents/transformer-in-practice/Tutor Number Slideshow · Toy Decoder Transformer.pdf" /tmp/toy_decoder_slides/page >/dev/null && mv /tmp/toy_decoder_slides/page-09.png /tmp/toy_decoder_slides/slide-content-08.png
+(no output)
+
+$ pdftotext -f 9 -l 9 -layout "/Users/ankitsingh/Documents/transformer-in-practice/Tutor Number Slideshow · Toy Decoder Transformer.pdf" - 2>/dev/null | head -220
+8 · RoPE by hand
+The “bit” query rotates because bit is at position 2
+
+pos(bit) = 2, θ₀ = 2×0.6 = 1.2, θ₁ = 2×0.2 = 0.4
+Q_bit before RoPE:  [1.000, 0.000, 0.000, 0.200]
+Q′_bit after RoPE: [0.362, 0.932, -0.078, 0.184]
+```
+
+**Assistant:**
+
+Slide 8 applies the formula from slide 7 to the query for “bit.” Before RoPE, Q_bit is `[1, 0, 0, 0.2]`. Because “bit” is at position 2, the first coordinate pair is rotated by `2 × 0.6 = 1.2`, while the second pair is rotated by `2 × 0.2 = 0.4`.
+
+The resulting query is approximately `[0.362, 0.932, -0.078, 0.184]`. The important point is not memorizing the trigonometry. It is that the query now contains positional influence: it represents what “bit at position 2” is looking for.
+
+V remains unrotated because it is the content payload. Q and K are rotated because their dot product decides relevance.
+
+---
+
+## Does a later token simply receive more rotation?
+
+**User:**
+
+This is the same thing that you already explained, right? We are just using those formulas in slide seven to add a rotation. The fourth token will get more rotation than the second token, and that is how ordering is done?
+
+**Assistant:**
+
+Yes. Slide 8 is a concrete calculation of slide 7’s concept. A later position produces a larger angle for a given frequency, so position 0 has no rotation, position 1 has some, and later positions continue advancing around the rotation.
+
+A larger angle does not mean greater importance. It only encodes a different position. Q/K comparisons use the resulting geometry to make attention depend on relative order and distance.
+
+---
+
+## Would rotations repeat after 360 degrees?
+
+**User:**
+
+clear any doubts: “How many tokens can rotation accommodate? How do values remain distinctive? One degree and 361 degrees are the same, so wouldn’t rotations overlap?”
+
+**Assistant:**
+
+A single rotating coordinate pair would indeed repeat. RoPE addresses this by rotating many coordinate pairs at different frequencies. It is like using many clock hands: a fast hand may wrap around, but slower hands will generally be at different angles. The complete pattern across all coordinate pairs distinguishes positions over a much longer range.
+
+Fast rotations are sensitive to nearby positional differences. Slow rotations help represent longer distances. When Q at position i is compared with K at position j, the rotations interact so the dot product reflects relative displacement, approximately `i − j`.
+
+RoPE still does not provide an infinite reliable context. Models have finite practical context windows, finite numerical precision, finite training ranges, and computational constraints. RoPE scaling can extend the useful range, but not make it unlimited.
+
+---
+
+## Context windows, chunks, and positional resets
+
+**User:**
+
+In the one context window, is that processed by breaking it into chunks?
+
+**Assistant:**
+
+The context window is the maximum active token sequence the model can use. Applications may split documents into independent chunks, and training data is commonly divided into bounded sequences. An inference engine may also process one logical context in smaller computational blocks while retaining earlier K/V states.
+
+Those cases should not be confused. Computational blocks can still belong to one continuous context if earlier state is retained. Independent document chunks are separate contexts unless summaries, retrieval, or another mechanism carries information between them.
+
+**User:**
+
+Maybe the way you bypass the finite range of rotations is that you only need to add positional information one chunk at a time?
+
+**Assistant:**
+
+That is partly right. RoPE only needs to work reliably across the model’s supported context range, not across every token ever written. Independent training or document chunks can restart at position 0 because the model is not directly attending across them.
+
+Within one continuous context, however, positions normally do not reset at internal chunk boundaries. Resetting would make the first token of every chunk positionally similar and obscure relationships across chunks. If positions restart, direct attention continuity is lost unless some external mechanism carries the information forward.
+
+---
+
+## Can positional encodings be generated infinitely?
+
+**User:**
+
+So you can have infinite amount of positional encoding, if I’m using that word correctly?
+
+**Assistant:**
+
+Mathematically, the RoPE formula can calculate rotations for arbitrarily large position numbers. In that limited sense, it can generate infinitely many positional encodings.
+
+That does not imply an infinitely usable context. Individual rotations are periodic, computers use finite precision, attention over long sequences is expensive, and the trained model may not generalize to position patterns far outside its training range. The formula can continue even when the model can no longer use the resulting positions reliably.
+
+---
+
+## Does the model need to recover content and angle separately?
+
+**User:**
+
+clear any doubts: “Computers cannot represent infinitely precise directions. Suppose one vector coordinate is 9 and rotation changes it to 10. How does attention know whether 10 came from 9 rotated by one amount or 8 rotated by another? Does it separate content from positional degree?”
+
+**Assistant:**
+
+A rotation preserves the length of the complete coordinate pair, although one individual coordinate can increase because the two coordinates are mixed. Looking only at the resulting number 10 would not reveal the original coordinate and angle. But attention neither examines a single coordinate in isolation nor reverses RoPE to recover content and position separately.
+
+Instead, it compares the complete rotated Q vector with the complete rotated K vector. Their coordinated rotations make the dot product depend on relative position. The model does not need to ask how one number was produced; position already changes the geometry of the Q/K match.
+
+Finite numerical precision is real, but it is not the only or principal reason contexts are finite. Training range, memory, computation, and positional generalization are also major constraints.
+
+A further correction is that RoPE normally rotates Q and K, not the original X embedding or V. The residual stream preserves the token representation, and V supplies unrotated content. RoPE changes the matching operation rather than replacing all content with a rotated embedding.
+
+---
+
+## Correct order: project, rotate, compare, read
+
+**User:**
+
+“You put in the embedding, rotate it, and then create the Q/K multiplication?”
+
+**Assistant:**
+
+Almost. The order is:
+
+```text
+X → create Q, K, and V → rotate Q and K → calculate Q·K scores → softmax → read/mix V
+```
+
+The model first projects X using W_Q, W_K, and W_V. Then RoPE rotates Q and K. Their dot products produce attention scores, and softmax converts those scores into weights. Those weights determine how much to read from the corresponding unrotated V rows.
+
+---
+
+## How rotated K stays linked to the correct V
+
+**User:**
+
+clear doubts: “Because you’re modifying K, how is it able to find its way back? Might rotating Q and K affect how K links back to V? Is the whole purpose of the dot product to determine which V to use?”
+
+**Assistant:**
+
+RoPE changes the coordinates of Q and K but does not change their token-row identity. “Dog” produces Q_dog, K_dog, and V_dog. Rotating K_dog does not detach it from the row belonging to “dog.”
+
+The query might produce scores against K_the, K_dog, and K_bit. After softmax, the score obtained from K_dog remains associated with the dog row and is therefore applied to V_dog. No second search is needed.
+
+K is like a searchable label attached to a drawer, while V is the content in that drawer. RoPE changes how the label participates in matching, but the label remains attached to the same drawer.
+
+The purpose of Q/K matching is not to generate V. It is to determine how much to read from each already-created V.
+
+---
+
+## What attention does with V
+
+**User:**
+
+Also, what is it doing with V?
+
+**Assistant:**
+
+Every token has a value vector, such as V_the, V_dog, and V_bit. The attention weights determine how much of each value contributes to the current position’s attention output.
+
+For example, if the “bit” position assigns 10 percent to “the,” 70 percent to “dog,” and 20 percent to itself, its attention output is approximately:
+
+```text
+0.10 × V_the + 0.70 × V_dog + 0.20 × V_bit
+```
+
+The model normally blends all permitted values rather than selecting only one. This weighted mixture becomes the attention update C and is added to the residual stream. In the hidden-notes analogy, Q and K decide which notes are relevant, V contains the notes, and the attention weights decide how much of each note to copy.
+
+---
+
 ## Response style captured from the session
 
 The style the user asked for in this session is conversational tutoring. The assistant should speak naturally, avoid over-structured bullets unless the user asks for them, and focus on clearing the exact confusion before moving ahead. The best pattern is to say the core idea first, explain it with the current slide’s numbers, then use a simple analogy if helpful.
 
 The important recurring explanations from this session were: position tells where the token is, ID tells what the token is; vocabulary means the model’s token dictionary; the embedding matrix is a learned lookup table, not usually a human-labeled feature table; raw embeddings are mostly static, but hidden representations become contextual after attention; residual streams keep the old information and add updates; Q/K/V are three roles where Q and K decide where to read from, while V is what gets read; K is a searchable handle or address, while V is the richer payload; RoPE rotates Q and K, not V, so position affects matching without directly rotating the copied content; and attention enriches token vectors with hidden contextual notes rather than literally rewriting the sentence in English.
+
+---
+
+## Returning to the session: catch-up summary
+
+**User:**
+
+help me catch up, I am returning to this session after a while
+
+**Assistant:**
+
+Yes. We were walking through the toy decoder transformer slide deck, and you wanted everything explained conversationally, not in a formal bullet-point style.
+
+We covered slides 1 through 7. The big picture is that the toy model takes the prompt “the dog bit,” turns those tokens into numbers, runs them through attention and feed-forward layers, and eventually predicts the next token.
+
+The first confusion we cleared was the difference between token ID and position. Token ID means which entry in the vocabulary the word has. So “the” has ID 1, “dog” has ID 2, and “bit” has ID 3 in this toy vocabulary. Position means where the token appears in the sentence. So in “the dog bit,” “the” is at position 0, “dog” is at position 1, and “bit” is at position 2.
+
+Then we talked about embeddings. The token IDs select rows from the embedding matrix. So the ID for “bit” selects the “bit” vector. In the toy slide, the vector dimensions are labeled like determiner, noun, verb, and bias, but we clarified that real models do not usually have clean human-readable dimensions like that. Real embeddings are learned during training, and their meanings are distributed across many dimensions.
+
+Then we talked about the residual stream. The embedded prompt becomes X, the running stream of information. Attention creates an update C, and the model adds it to X. Then the feed-forward network creates another update M, and the model adds that too. So the model keeps enriching the same stream rather than replacing it.
+
+The biggest part we discussed was Q, K, and V. Q is the query, meaning what the current token is looking for. K is the key, meaning how each token can be found or matched. V is the value, meaning the actual information that gets copied forward if that token is attended to. The clean phrase we landed on was: Q and K decide where to read from; V is what gets read.
+
+You were not convinced why K is needed, so we spent time on that. The key intuition was that K is like a searchable handle, address, tag, or metadata. V is the full content. If you search the web, you use titles, snippets, tags, or URLs to find a page; then once you find it, you read the page content. K is the searchable part. V is the content payload. If we only had Q and V, then V would have to be both searchable and readable, which is less flexible.
+
+Then you asked the opposite question: if K already extracts useful information, why do we need V? We clarified that K is optimized for being found, not for being copied forward. For example, the key for “dog” might expose “I am a likely subject noun,” but the value from “dog” may carry richer information like dog, animal, singular, animate, identity of subject, and so on.
+
+Then slide 6 showed Q for “bit” being computed by hand. The “bit” embedding was `[0, 0, 1, 0.2]`, and multiplying by W_Q produced `[1, 0, 0, 0.2]`. That showed that Q is not magic. It is just the token vector multiplied by a learned matrix. W_Q is learned during training and frozen during inference.
+
+Then slide 7 introduced RoPE, rotary positional embedding. RoPE rotates Q and K based on token position, but it does not rotate V. That matters because Q and K are used for matching, so position should affect matching. V carries the content, so we do not want to distort the content payload directly. We also clarified that RoPE does not literally tell the model “this is position 10.” Instead, it changes the geometry of Q/K dot products so attention scores become sensitive to relative position and order.
+
+The most important intuition you built was this: attention is not literally turning the sentence into a longer English sentence, but internally it is enriching each token’s vector with hidden contextual notes. So the vector for “bit” can become not just “bit,” but something more like “bit, with dog as the likely subject, after a determiner-noun phrase.” Not in English, but in numbers.
+
+So if we continue, the next slide should be slide 8, where the deck likely does the RoPE rotation by hand for “bit.”
+
+---
+
+## Slide 7 recap after returning
+
+**User:**
+
+explain slide 7 again
+
+**Assistant:**
+
+Slide 7 is about adding position information, but in a very specific way.
+
+Up to slide 6, the model has created Q, K, and V from the token embeddings. Q and K are going to be used to decide which tokens should match with which other tokens. But there is a problem: if the model only looks at token content, it does not fully know word order. “the dog bit” and “bit the dog” contain the same words, but the meaning is different because the positions are different.
+
+So RoPE adds position information by rotating Q and K. It does not add a new position column. It does not change the original embedding directly. It rotates pairs of coordinates inside Q and K depending on the token’s position.
+
+In this toy slide, each vector has four numbers: h0, h1, h2, h3. RoPE treats them as two little pairs: h0 with h1, and h2 with h3. For each pair, it applies a 2D rotation. If the token is at position 0, there is basically no rotation. If the token is at position 1, it rotates some. If the token is at position 2, it rotates more.
+
+That is why “the” at position 0 mostly stays the same, while “dog” at position 1 changes, and “bit” at position 2 changes more.
+
+The reason only Q and K are rotated is important. Q and K decide matching. They decide, “Should this token pay attention to that token?” So we want position to influence that decision. V is the content that gets copied once the match is decided, so V is left alone.
+
+So the simple intuition is: RoPE makes the attention matching position-aware. It changes how Q and K line up with each other, so the dot product knows not only “do these tokens match?” but also “do these tokens match in this relative position?”
+
+---
+
+## Locating the “hidden notes” intuition
+
+**User:**
+
+so in this session i wrote something like attention is like adding notes etc etc, can you point me to what I was saying?
+
+**Assistant:**
+
+Yes, you said it around the section titled **“Attention as hidden notes, not a literal longer English sentence”** in the notes file.
+
+You were asking whether attention is basically “enhancing the sentence into a bigger sentence implicitly,” adding richer context to the token sequence. The exact captured line is:
+
+“Are we enhancing the sentence into a bigger sentence implicitly, adding richer information to a sequence of tokens?”
+
+And the phrasing you liked was:
+
+“Attention is not literally turning the sentence into a longer English sentence, but internally it is enriching each token’s vector with extra context, almost as if the model is writing hidden notes onto it.”
+
+It’s around line 751 in:
+
+`module2-llm-internals/2-july-8-conversation.md`
+
+---
+
+## Recalling the attention intuition before continuing
+
+**User:**
+
+can you help me recall similar intuition about what attention is before we move to next slide?
+
+**Assistant:**
+
+Yes. The intuition we built was: attention is the model’s way of letting each token write hidden contextual notes onto itself by looking at other relevant tokens.
+
+So before attention, the token “bit” is mostly just “bit.” It has its own raw embedding, but it does not yet fully carry the sentence context. After attention, the representation at “bit” can contain extra hidden information like: “this action happened after ‘the dog,’ and ‘dog’ is probably the thing doing the biting.” Not in English, but in vector form.
+
+The important phrase is: attention does not make the sentence longer in words; it makes each token’s internal vector richer.
+
+So in “the dog bit,” the final token position is not just representing the word “bit.” It becomes more like a compressed contextual summary of the prompt so far. That matters because in a decoder model, the next-token prediction is made from the last position. So the last position needs to carry useful information from earlier tokens.
+
+Q, K, and V are the mechanism for doing that. Q is the current token asking, “What information do I need?” K is each token’s searchable handle, like “I can be found as a subject noun” or “I can be found as a previous object.” V is the actual information that gets copied over if that token is selected.
+
+So attention is like a soft lookup system. Each token searches the previous tokens, decides how relevant they are, and pulls a weighted mix of their value information into itself. That weighted mix is the “note” being added.
+
+If we stay with the hidden-notes metaphor, it’s like the token “bit” gets a note attached saying, “subject-like noun nearby: dog,” or “sentence pattern: determiner noun verb.” Again, the model does not write those English notes, but the vector gets changed in a way that can support those meanings later.
+
+That’s the key intuition to carry into the next slide: attention is not the final answer. It is the model enriching the residual stream so each position becomes more context-aware.
+
+---
+
+## Connecting the Luis Serrano attention video to this session
+
+**User:**
+
+is this the same thing about [Luis Serrano transcript about attention, apple/orange/phone, dot product, cosine similarity, scaled dot product, softmax, Q/K/V as linear transformations, and multi-head attention]?
+
+**Assistant:**
+
+Yes, it’s the same core intuition, but the video is using a slightly more visual “moving words in embedding space” story.
+
+When the video says the word “apple” gets pulled toward “orange” in the sentence “apple and orange,” that is basically the same idea as what we were calling “attention writes hidden notes onto the token.” The token “apple” starts with an ambiguous representation. It could mean fruit, or it could mean the company. After attention, its vector changes because it pulled information from nearby relevant words. So in the fruit sentence, “orange” influences “apple,” and the new “apple” representation becomes more fruit-like. In the technology sentence, “phone” influences “Apple,” and the new representation becomes more tech-company-like.
+
+So yes, “words flying toward each other” or “gravity between words” is a visual metaphor for attention. Our metaphor was “the token receives hidden contextual notes.” They are pointing to the same mechanism: a token’s vector becomes context-aware by mixing in information from other tokens.
+
+The video’s similarity table is also the same thing as Q dot K. It is asking, “how relevant is this word to that word?” Similar words, or contextually useful words, get higher scores. Then softmax turns those scores into percentages. Those percentages are the attention weights. So if “apple” attends 43 percent to “orange,” that means the new apple vector receives a meaningful amount of information from orange.
+
+Where the video becomes more precise is when it says Q and K are used to create a space that is good for finding similarity, while V is the space used for the actual information being moved. That matches what we discussed: K is the searchable handle, Q is the search question, and V is the payload.
+
+So the clean connection is this: the video’s “apple moves toward orange” equals our “apple’s vector gets enriched with a hidden note saying fruit-context.” The movement is not literal English reasoning. It is vector mixing. Attention changes the internal coordinates so the same word has a different representation depending on context.
+
+One small caution: the video simplifies by saying embeddings move toward each other. That is good intuition, but in real transformers, the original token embedding is not literally moved once and replaced forever. The model creates attention outputs, adds them into the residual stream, then repeats this through many layers. But intuitively, yes, the result is that the representation of the word shifts toward the meaning supported by context.
+
+---
+
+## Why all positions are processed when only p₃ is used
+
+**Assistant:**
+
+Yes. Here is another way to think about it: we do not care about the earlier predictions anymore, but we still care about the earlier token representations.
+
+Start with the prompt:
+
+```text
+Position 1       Position 2       Position 3
+   “the”            “dog”            “bit”
+```
+
+Because attention is causal, each position can read only itself and tokens to its left:
+
+```text
+“the”  reads:  “the”
+
+“dog”  reads:  “the”, “dog”
+
+“bit”  reads:  “the”, “dog”, “bit”
+```
+
+So after one attention layer, each token has received its own contextual notes:
+
+```text
+“the”  → [the]
+
+“dog”  → [dog + information from the]
+
+“bit”  → [bit + information from the + information from dog]
+```
+
+For the “bit” position, the attention update might look like this:
+
+```text
+C_bit =
+    0.1 × V_the
+  + 0.7 × V_dog
+  + 0.2 × V_bit
+```
+
+That result is added to the existing representation of “bit”:
+
+```text
+old representation of “bit”
+              +
+context collected by attention
+              =
+context-enriched “bit” representation
+```
+
+That final position now contains something closer to a compressed numerical representation of the entire prompt “the dog bit.”
+
+The model then processes that representation through the remaining layers:
+
+```text
+“the dog bit”
+      |
+      v
+token embeddings
+      |
+      v
+attention: collect contextual notes
+      |
+      v
+residual addition
+      |
+      v
+feed-forward network
+      |
+      v
+more transformer layers
+      |
+      v
+final vector at the “bit” position
+      |
+      v
+one logit for every vocabulary token
+      |
+      v
+softmax
+      |
+      v
+p₃ = probability distribution for the next position
+      |
+      v
+sample one token
+```
+
+The notation p₃ does not mean three probabilities. It means the next-token probability distribution produced from input position 3. That single distribution contains one probability for every token in the vocabulary:
+
+```text
+p₃:
+
+“the”       0.40
+“cat”       0.20
+“mailman”   0.15
+“ran”       0.10
+“.”         0.08
+...
+```
+
+The model samples one token from that distribution.
+
+Now, your real question is: if we only use the output at “bit,” why calculate anything for “the” and “dog”?
+
+The most important distinction is this:
+
+```text
+We do not need the old predictions p₁ and p₂.
+
+We do need the old hidden representations
+and their K/V information.
+```
+
+In a one-layer toy model, we could take the query from “bit,” compare it with the keys from all three tokens, and mix their values. We would not strictly need to calculate the attention outputs for “the” and “dog.”
+
+But a real transformer has many layers. It works more like this:
+
+```text
+LAYER 1
+
+the ───────────────→ contextual “the”
+the + dog ─────────→ contextual “dog”
+the + dog + bit ───→ contextual “bit”
+
+
+LAYER 2
+
+contextual “the” ────────────────────→ new “the”
+contextual “the” + contextual “dog” ─→ new “dog”
+
+contextual “the”
+    + contextual “dog”
+    + contextual “bit” ──────────────→ new “bit”
+```
+
+At layer 2, “bit” does not merely read the original embedding for “dog.” It can read the version of “dog” that was already enriched at layer 1. So the model needs to process the earlier tokens through the layers to produce useful keys and values for them.
+
+After all the layers, only the final “bit” vector is sent through the output calculation for p₃:
+
+```text
+Final representations:
+
+the ─────→ not used for the current next-token prediction
+dog ─────→ not used for the current next-token prediction
+bit ─────→ logits → softmax → p₃ → sample next token
+```
+
+The first two representations still mattered because they supplied information to the final position. It is their predictions that we do not need.
+
+During the initial processing of the prompt, called the prefill stage, the computer normally processes all three positions in parallel:
+
+```text
+PREFILL
+
+the ─┐
+dog ─┼─→ process prompt → save K/V states
+bit ─┘                     use final row → p₃
+```
+
+Suppose the sampled next token is “the.” It gets appended:
+
+```text
+the  dog  bit  the
+ 1    2    3    4
+```
+
+For the following prediction, the model reuses the saved keys and values from positions 1 through 3. It does not start all over again:
+
+```text
+DECODING NEXT TOKEN
+
+new query for position 4
+          |
+          v
+compare with cached K_the, K_dog, K_bit
+and the new K_the
+          |
+          v
+mix the corresponding V vectors
+          |
+          v
+produce p₄
+          |
+          v
+sample position 5
+```
+
+So the shortest way to remember it is:
+
+```text
+Past predictions are no longer needed.
+
+Past token information is still needed.
+
+Only the last position produces the prediction we currently use.
+```
+
+That is fully compatible with causal, autoregressive generation.
