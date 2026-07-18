@@ -1506,3 +1506,480 @@ Only the last position produces the prediction we currently use.
 ```
 
 That is fully compatible with causal, autoregressive generation.
+
+---
+
+## Full session recap after returning
+
+We’re studying a toy decoder-only transformer using the prompt “the dog bit.” The whole purpose is to follow how those three tokens become a probability distribution for the next token.
+
+At the beginning, we separated token ID from position. A token ID identifies the token in the model’s vocabulary. In this toy vocabulary, “the” is ID 1, “dog” is ID 2, and “bit” is ID 3. Position identifies where the token occurs in this particular sequence: “the” is at position 0, “dog” at position 1, and “bit” at position 2.
+
+Those token IDs select rows from an embedding matrix. The selected rows form X, the numerical starting representation of the prompt. The slide gives the dimensions simple labels such as determiner, noun, verb, and bias, but those are teaching labels. In a real LLM, embeddings are learned during training, and their dimensions usually do not have neat one-to-one English meanings.
+
+X begins the residual stream, which is the model’s running numerical workspace. A transformer block does not throw X away. Attention computes an update C and adds it to X, producing R1. The feed-forward network computes another update M and adds that to R1, producing R2. The values change, but the stream keeps the same token-by-feature shape.
+
+The intuition we liked for attention was “writing hidden notes.” Attention does not literally turn the prompt into a longer English sentence. It enriches each token’s hidden representation with relevant information from other tokens. After attention, the final “bit” representation can numerically carry something like “bit, with dog as the likely subject,” even though no literal English note exists inside the model.
+
+Q, K, and V implement that process. Q is what the current token is looking for. K is the searchable handle exposed by each candidate token. V is the information supplied if that token receives attention. The short version was: Q and K decide where to read; V is what gets read.
+
+We spent extra time on why K and V must be separate. K is like a webpage’s title, tags, URL, and search snippet. It helps a query find the page. V is the actual page content. A key might expose “I am a likely subject noun,” while its value can supply richer information such as “dog, singular, animal, animate.” K is optimized for being found; V is optimized for what should be communicated after it is found.
+
+Q, K, and V are created from X using learned matrices:
+
+```text
+Q = XW_Q
+K = XW_K
+V = XW_V
+```
+
+The W matrices are learned during training and frozen during inference. They are not recreated for each prompt. The prompt length can vary because the number of rows in X can vary, while its width remains fixed. The same learned matrices are applied to every token row.
+
+Slide 6 showed this for “bit.” Its starting vector was `[0, 0, 1, 0.2]`. Multiplying it by W_Q produced the query `[1, 0, 0, 0.2]`. That demonstrated that Q is simply a learned projection, not a manually written question.
+
+Then we introduced RoPE, rotary positional embedding. Q and K know what to match, but attention also needs order. “The dog bit” and “bit the dog” contain the same tokens but mean different things. RoPE rotates coordinate pairs inside Q and K according to each token’s position.
+
+RoPE does not rotate X or V in this setup. It rotates Q and K because their dot product decides relevance. V remains unrotated because it carries the content. The processing order is:
+
+```text
+X
+→ create Q, K, and V
+→ rotate Q and K with RoPE
+→ compare rotated Q and K
+→ softmax the scores
+→ use the weights to mix V
+```
+
+Slide 8 applied RoPE to the “bit” query. Because “bit” is at position 2, its coordinate pairs were rotated by position-dependent angles. Its query changed from `[1, 0, 0, 0.2]` to approximately `[0.362, 0.932, -0.078, 0.184]`. The precise trigonometry was less important than the idea that this is now the query for “bit at position 2.”
+
+Later positions advance farther around each rotation, but that does not make them more important. It simply makes their positional pattern different.
+
+You then asked whether rotations eventually repeat. A single rotation does repeat, like one clock hand returning to the same angle. RoPE uses many coordinate pairs rotating at different frequencies. One pair may wrap around quickly, while another rotates slowly. Their combined pattern is like several clock hands and remains distinguishable across a much longer range.
+
+The RoPE formula can mathematically generate rotations for arbitrarily large positions, but that does not give the model an infinitely useful context window. The practical range is limited by training, computation, memory, numerical precision, and how well the learned attention patterns generalize to long distances.
+
+We also discussed chunks. Independent training or document chunks can restart position numbering because the model does not directly attend between them. But positions normally do not restart inside one continuous context window. An inference engine may process the context in smaller computational blocks, but they remain one logical context if earlier K/V states are retained.
+
+Then we addressed how the rotated key remains connected to its value. Every token keeps the same row identity. “Dog” produces Q_dog, K_dog, and V_dog. RoPE changes the coordinates inside K_dog but does not detach it from V_dog. If matching against K_dog produces a 70 percent attention weight, that weight is applied to V_dog.
+
+For the final “bit” position, the attention result might look like:
+
+```text
+C_bit =
+    0.1 × V_the
+  + 0.7 × V_dog
+  + 0.2 × V_bit
+```
+
+That weighted mixture is the contextual note created by the attention head. It is added to the residual stream, allowing the “bit” position to carry substantial information from “dog,” some from itself, and a little from “the.”
+
+Multiple attention heads perform different learned kinds of matching in parallel. Their outputs are combined. The feed-forward network adds another update, and many transformer layers repeat this enrichment. Eventually, the final hidden vector at the “bit” position becomes a rich numerical summary of the prompt so far.
+
+The model converts that final vector into one logit for every vocabulary token. Softmax turns those logits into p₃, the next-token probability distribution produced from position 3:
+
+```text
+final “bit” vector
+→ vocabulary logits
+→ softmax
+→ p₃
+→ sample one next token
+```
+
+The most recent confusion was why attention is calculated for all positions when we only care about p₃. The crucial distinction was:
+
+```text
+We do not need the earlier predictions p₁ and p₂.
+
+We still need the earlier token representations
+and their K/V information.
+```
+
+In this one-layer toy model, we could conceptually compute only the “bit” query and compare it with the three keys. But real models have many layers. At a later layer, “bit” may read the already-contextualized representation of “dog,” so the earlier tokens must be processed through the previous layers too.
+
+During the initial prompt processing, called prefill, the model normally processes all positions efficiently in parallel and stores their keys and values in the KV cache. Only the final position’s output is used for the current next-token prediction.
+
+After one token is sampled and appended, generation remains autoregressive. The model processes the new position and reuses the cached keys and values from the old positions rather than recomputing the entire prompt.
+
+The shortest recap is this:
+
+```text
+Attention enriches tokens with contextual notes.
+
+Q asks what is needed.
+K makes each token searchable.
+Q·K determines the attention weights.
+V supplies the information.
+RoPE makes Q/K matching position-aware.
+The weighted V mixture updates the residual stream.
+The final position becomes a contextual summary.
+That final vector produces p₃.
+One token is sampled, appended, and the process repeats.
+```
+
+---
+
+## Slide 9: Q/K dot-product scores
+
+**User:**
+
+let's proceed to next slide
+
+**Assistant:**
+
+Slide 9 is where the model compares the rotated queries with the rotated keys. The result is a three-by-three matrix because there are three queries and three keys. Each row belongs to the token seeking information, and each column belongs to a token that may supply information.
+
+For the “bit” query, the raw scores are:
+
+```text
+K_the → 0.209
+K_dog → 0.302
+K_bit → 0.020
+```
+
+“Dog” has the strongest raw match. The values come from Q/K dot products divided by 2. The divisor is 2 because `d_head = 4` and `√4 = 2`. The transpose of K allows every query row to be compared with every key row in one matrix multiplication.
+
+These scores are not yet probabilities. Slide 10 applies the causal mask, and slide 11 applies softmax. The mask will remove the first row’s prohibited comparisons with future tokens.
+
+---
+
+## How Q/K scores become coefficients for V
+
+**User:**
+
+Is this the similarity-score calculation where Q and K determine which V to use? How are the weights incorporated with V, and why divide by `√d_head` rather than use an ordinary dot product or cosine similarity?
+
+**Assistant:**
+
+Q and K do not calculate or locate V. Q, K, and V have already been created independently from X. The Q/K comparison produces one raw score for every permitted token position. After masking, softmax turns those scores into coefficients.
+
+For the final “bit” row:
+
+```text
+raw scores = [0.209, 0.302, 0.020]
+softmax    ≈ [0.342, 0.375, 0.283]
+```
+
+The positions remain aligned, so the first coefficient multiplies V_the, the second multiplies V_dog, and the third multiplies V_bit:
+
+```text
+C_bit =
+    0.342 × V_the
+  + 0.375 × V_dog
+  + 0.283 × V_bit
+```
+
+The result is the attention output for “bit” and is added to the residual stream. The model normally blends all allowed V vectors rather than selecting only one.
+
+Dividing by `√d_head` controls the typical size of dot products. A dot product adds one term per dimension, so its variance grows with the number of dimensions and its standard deviation grows approximately with the square root of that number. Without scaling, softmax can become excessively sharp and training becomes more difficult.
+
+Cosine similarity normalizes by the individual lengths of Q and K and therefore removes magnitude information. Scaled dot-product attention divides by the fixed dimension-based factor `√d_head`, allowing both alignment and vector magnitude to affect the score while keeping the typical scale manageable.
+
+---
+
+## Clarification without metaphors: what “gate” meant
+
+**User:**
+
+Find another way to explain how Q/K scores connect to V. What is “gate” here? No metaphors.
+
+**Assistant:**
+
+Q, K, and V are calculated first:
+
+```text
+Q = XW_Q
+K = XW_K
+V = XW_V
+```
+
+Then attention calculates:
+
+```text
+S = QKᵀ / √d_head
+A = softmax(causal_mask(S))
+C = AV
+```
+
+Every entry in A is a scalar coefficient. Its row and column indices preserve which query and token position it belongs to. Each coefficient multiplies the V row at the same token position, and the scaled V rows are added.
+
+“Gate” was only an informal description of this scalar coefficient. There is no separate gate component in standard attention. The precise term is attention weight or coefficient.
+
+---
+
+## Dot products and V coefficients
+
+**User:**
+
+so dot product is done to find values for coefficient for the V vector of each position?
+
+**Assistant:**
+
+Yes. The dot product between the current query and each token’s key produces a raw score for that position. Softmax converts those raw scores into coefficients. Each coefficient then multiplies the V vector from the same position, and the weighted V vectors are added to produce the attention output.
+
+---
+
+## Where softmax appears
+
+**User:**
+
+where is the softmax step in slide 9?
+
+**Assistant:**
+
+It is not on slide 9. Slide 9 calculates only the raw Q/K dot-product scores. Slide 10 applies the causal mask, and slide 11 applies softmax to produce the coefficients for the V vectors.
+
+---
+
+## Why V is necessary
+
+**User:**
+
+What is the difference between the role of Q/K and the role of V? Why not finish at Q and K?
+
+**Assistant:**
+
+Q and K tell the model which token positions are relevant. Their dot products produce scalar scores, but those scores contain no detailed information to add to the current token.
+
+V contains the information that attention transfers from each position. For example, the query from “bit” may match the key from “dog” strongly, but the resulting score is only one number. After softmax, that number becomes a coefficient multiplying V_dog, which is a complete vector. The resulting vector contributes information from the “dog” position to the representation at “bit.”
+
+Without V, attention could calculate which positions are relevant but would have no content vector to transfer from them.
+
+---
+
+## What V_dog contains
+
+**User:**
+
+is there a way to understand the V_dog what it contains? Or not?
+
+**Assistant:**
+
+V_dog is calculated from the current hidden representation at the “dog” position using W_V. In an early layer it may primarily contain information related to “dog.” In later layers it may also contain contextual information previously collected at that position.
+
+Its dimensions normally cannot be translated into a clean list of facts such as “animal,” “subject,” and “singular.” The information is distributed across many coordinates. The reliable interpretation is that V_dog contains the information this particular attention head has learned to transfer from the “dog” position.
+
+---
+
+## What W_V does
+
+**User:**
+
+similarly do W_V
+
+**Assistant:**
+
+W_V is the learned matrix that transforms the current token representation into its value vector:
+
+```text
+V_dog = X_dog × W_V
+```
+
+W_V determines which combinations of information from X_dog are included in V_dog for that attention head. It is learned during training and fixed during inference. Individual values in W_V are usually not directly human-readable.
+
+**User:**
+
+can you explain with metaphor similar to “Attention enriches tokens with contextual notes”?
+
+**Assistant:**
+
+W_V decides what kind of contextual note a token is able to share. W_V prepares information from the “dog” representation, producing V_dog. Q and K determine the attention weight for the “dog” position, and that weight determines how much of V_dog is added to the current position.
+
+**User:**
+
+how does W_V prepares the note?
+
+**Assistant:**
+
+W_V prepares it by multiplying and combining the numbers in the token’s current representation. Every output coordinate in V_dog is a learned weighted combination of the coordinates in X_dog:
+
+```text
+V_dog = X_dog × W_V
+```
+
+Training adjusts W_V so the resulting value vectors contain information that is useful to transfer to other positions. W_V can combine, strengthen, weaken, rearrange, or remove numerical features. In this toy deck, W_V is effectively identity-like, so V_dog stays close to X_dog.
+
+---
+
+## W_V and open-weight models
+
+**User:**
+
+is W_V weight of the model? Like when we say open weight models, are we talking about that?
+
+**Assistant:**
+
+Yes. W_V is one of the model’s learned weight matrices. “Open-weight model” means that trained parameters such as W_V, W_Q, W_K, embedding matrices, feed-forward matrices, output matrices, and normalization parameters are available to download.
+
+A real transformer has W_V parameters in each attention layer, usually stored with the parameters for multiple heads in larger combined matrices. W_V is one small part of the billions of numbers called the model’s weights. Open-weight does not necessarily mean the training data or training code is also open.
+
+---
+
+## Slide 10: causal masking
+
+**User:**
+
+next slide please
+
+**Assistant:**
+
+Slide 10 applies the causal mask. It prevents each token from reading tokens that come after it.
+
+The query for “the” can use only “the,” so the scores for “dog” and “bit” become negative infinity. The query for “dog” can use “the” and “dog,” but not “bit.” The query for “bit” can use all three because nothing in the prompt comes after it.
+
+Softmax turns negative infinity into a weight of zero. The last row remains unchanged, so the “bit” position can use V_the, V_dog, and V_bit when producing the representation used for p₃.
+
+---
+
+## Causal versus autoregressive
+
+**User:**
+
+what is difference between causal vs autoregressive? I forgot
+
+**Assistant:**
+
+Causal describes which positions a token may attend to. It can use itself and earlier positions, but not future positions.
+
+Autoregressive describes generation. The model predicts one token, appends it, and uses the expanded sequence to predict the next token.
+
+Causal attention prevents future information from leaking into a prediction, while autoregressive generation repeats predictions sequentially.
+
+---
+
+## When causal masking is and is not required
+
+**User:**
+
+When is masking required, and when is it not required? What architectures do not require it?
+
+**Assistant:**
+
+Decoder-only next-token models such as GPT use causal self-attention. Encoder-only models such as BERT normally use bidirectional self-attention and therefore do not use a causal mask. Every input token may attend to tokens on both sides.
+
+Encoder-decoder models use both patterns. Encoder self-attention is usually bidirectional. Decoder self-attention is causal. Decoder cross-attention can normally attend to all encoder outputs.
+
+Padding masks are separate from causal masks. Even a bidirectional encoder may mask padding positions.
+
+---
+
+## What is parallel and what is sequential
+
+**User:**
+
+When this is happening, what is the order? What happens in parallel, and what is sequential?
+
+**Assistant:**
+
+During training or prompt prefill, all token positions within a layer are processed together as matrices. Q, K, and V are created for all positions, the complete score matrix is calculated, and the triangular causal mask is applied to the complete matrix in one operation.
+
+Transformer layers remain sequential because layer 2 needs layer 1’s output. Generated response tokens are also sequential because the next token cannot be generated until the previous token has been selected and appended.
+
+Masking is not normally performed one word at a time. It lets parallel position processing obey causal restrictions.
+
+---
+
+## Training prefixes are calculated together
+
+**User:**
+
+During training, does it process “the,” then “the cat,” then “the cat sat,” one prefix at a time?
+
+**Assistant:**
+
+No. The complete training sequence is normally processed once. Different rows of one triangular mask create the different prefix views. A row seeing “the” predicts “cat,” another seeing “the cat” predicts “sat,” and another seeing “the cat sat” predicts the following token. These predictions are calculated together.
+
+The model calculates a loss for each next-token prediction, combines the losses, and updates the model through backpropagation.
+
+Teacher forcing means every training position receives the real previous tokens from the dataset. If the model predicts “dog” after “the,” the next training position still receives the correct sequence “the cat,” not “the dog.” Teacher forcing supplies correct previous tokens; causal masking prevents access to future tokens.
+
+During inference there is no known correct continuation, so the model must append and reuse its own generated token.
+
+---
+
+## Intuition for training parallelism and teacher forcing
+
+**Assistant:**
+
+Imagine several students answering simultaneously. Each sees the same sentence but cannot see anything after an assigned position. One sees “the” and predicts “cat,” another sees “the cat” and predicts “sat,” and another sees “the cat sat” and predicts the following token. Their restricted views correspond to rows of the causal mask.
+
+During training, each student receives the real earlier words even if another prediction was incorrect. That is teacher forcing. During inference, the model must use its own previously generated token.
+
+---
+
+## Inference: prompt prefill and sequential decoding
+
+**User:**
+
+When I type a prompt, how is it handled? Are all prompt tokens masked together, and then is the response generated one token at a time?
+
+**Assistant:**
+
+The complete prompt is tokenized and processed in a prefill stage. Within each layer, Q, K, and V for all prompt positions are calculated in parallel. One triangular causal mask is applied to the complete attention-score matrix. Each row has different permitted positions even though the whole mask is applied in one operation.
+
+The final prompt position produces the first response-token distribution. After a token is selected, response generation proceeds sequentially. Earlier K and V vectors are retained in the KV cache.
+
+---
+
+## Prefill is different from teacher-forced training
+
+**User:**
+
+Is prefill different from training with teacher forcing?
+
+**Assistant:**
+
+Yes. Training has known target text, calculates losses, and updates model weights. Teacher forcing supplies the correct previous target tokens.
+
+Inference prefill processes the user’s known prompt, creates the prompt’s K/V cache, and produces the first response-token distribution. It does not have response targets, calculate a training loss, use backpropagation, or update model weights.
+
+The two operations use similar causal transformer computations, but they have different purposes.
+
+---
+
+## Why a new response token recalculates attention weights
+
+**User:**
+
+Since the prompt has already been processed, why would every new response token need to calculate attention weights for the prompt again? Would that not be computationally excessive?
+
+**Assistant:**
+
+Each response token does calculate a new set of attention scores against all previous positions. It does not recalculate the earlier tokens’ K and V vectors or their earlier attention outputs. Those are cached.
+
+For each new token, the model creates only its new Q, K, and V. The new Q is compared with all cached K vectors, creating one new row of scores. Those weights combine the corresponding cached V vectors.
+
+The weights cannot be reused because they depend on the current query, and each new token has a different query. This remains computationally expensive: work per generated token grows roughly linearly with context length. The KV cache avoids recomputing the complete all-positions-by-all-positions attention matrix, but it does not remove new-query-to-past-key comparisons.
+
+---
+
+## Why Q changes while earlier K/V remain cached
+
+**User:**
+
+How is prefill different from training, and why does Q change for each generated token while K stays cached? For example, after “the dog bit,” if the model generates “the” and then “cat,” why does “cat” need a different Q?
+
+**Assistant:**
+
+Prefill is an inference operation, not teacher-forced training. It processes the known prompt in parallel within each layer and creates the prompt’s K/V cache without updating model weights.
+
+For “the dog bit,” prefill creates K and V for all three prompt tokens and uses the final position to predict token four. If token four is “the,” the model creates Q, K, and V for that new token. Its Q compares with the cached keys, and its new K and V are appended to the cache.
+
+If the next token is “cat,” the model creates a different Q for “cat.” Q belongs to the current token and position. “The” and “cat” have different token representations, occur at different positions, and can require different contextual information. Even two occurrences of “the” can have different queries because their positions and accumulated context differ.
+
+Earlier K and V entries remain valid because causal attention prevents earlier tokens from seeing later tokens. Adding “the” or “cat” cannot alter the earlier representation of “dog,” because “dog” is not allowed to attend forward to them.
+
+At each decoding step, the model creates Q, K, and V only for the new token. The new Q reads the cached K/V entries, and the new K/V entries are appended to the cache.
+
+---
+
+## Pending question
+
+I still need to understand this more clearly:
+
+> Suppose it next predicts “cat.” Now it creates a different Q for “cat” and compares it with all the cached keys for “the dog bit the,” plus the new key for “cat.”
+>
+> The Q changes because it belongs to the current token and position. “The” and “cat” have different token representations, occur at different positions, and need different contextual information. Even two occurrences of the word “the” can have different queries because their positions and accumulated context differ.
+>
+> The earlier K and V vectors remain cached because causal attention prevents earlier tokens from seeing later tokens. Adding “the” or “cat” cannot change the earlier representation of “dog,” because “dog” is not allowed to look forward at them. Therefore, its previously calculated K and V remain valid.
+>
+> So each decoding step creates Q, K, and V only for the new token. The new Q reads all cached K/V entries, and the new K/V entries are appended to the cache for the next step.
