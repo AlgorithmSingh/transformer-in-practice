@@ -1983,3 +1983,296 @@ I still need to understand this more clearly:
 > The earlier K and V vectors remain cached because causal attention prevents earlier tokens from seeing later tokens. Adding “the” or “cat” cannot change the earlier representation of “dog,” because “dog” is not allowed to look forward at them. Therefore, its previously calculated K and V remain valid.
 >
 > So each decoding step creates Q, K, and V only for the new token. The new Q reads all cached K/V entries, and the new K/V entries are appended to the cache for the next step.
+
+---
+
+## Slide 11: softmax produces the attention matrix
+
+**User:**
+
+next slide?
+
+**Assistant:**
+
+Slide 11 takes the causally masked scores and applies softmax independently to each row. The resulting matrix is the attention matrix `A`:
+
+```text
+                  Read from
+               the     dog     bit
+
+Query: the    1.000   0.000   0.000
+Query: dog    0.316   0.684   0.000
+Query: bit    0.342   0.375   0.283
+```
+
+Each row sums to one. The zeros come from causal masking. “The” can read only itself, “dog” can read “the” and itself, and “bit” can read all three positions.
+
+The weights are not the content. They specify how much of each corresponding V vector to read. The next operation is `C = AV`, so the final row produces:
+
+```text
+C_bit =
+    0.342 × V_the
+  + 0.375 × V_dog
+  + 0.283 × V_bit
+```
+
+---
+
+## Why earlier positions matter when only the final prediction is used
+
+**User:**
+
+If only the last position is used to predict the next token, why perform attention and other processing for all the earlier words? Where is their information transferred into the final vector?
+
+**Assistant:**
+
+The final position is the only position whose output is currently sent to the vocabulary predictor, but that final vector is useful because attention has mixed earlier information into it.
+
+For “the dog bit,” the exact transfer occurs in the weighted V mixture:
+
+```text
+C_bit =
+    0.342 × V_the
+  + 0.375 × V_dog
+  + 0.283 × V_bit
+```
+
+That attention output is added to the residual-stream vector at “bit.” The earlier positions do not send their old predictions forward. Their K vectors let the final query decide relevance, and their V vectors supply the information.
+
+In a multilayer transformer, earlier tokens also become contextualized. “Dog” may first gather information from “the,” and a later-layer representation of “bit” can then read that enriched “dog” representation. Only the final prediction is consumed, but earlier hidden states and K/V vectors act as contextual memory.
+
+---
+
+## Dense and sparse attention
+
+**User:**
+
+Is this dense attention because all earlier K vectors are used? What would sparse attention look like?
+
+**Assistant:**
+
+Yes. This is dense causal attention: the final query is allowed to compare with every earlier key and its own key.
+
+Sparse attention restricts each query to a subset of positions. In a 10,000-token context, a query might read only the latest 512 positions plus a few selected older positions. Skipped positions effectively receive zero weight.
+
+The subset can be fixed, such as a local sliding window, or selected through a retrieval or learned mechanism. Sparse attention reduces computation and memory use, but it can miss useful information at an excluded position.
+
+---
+
+## Attention heads versus transformer layers
+
+**User:**
+
+If a model has ten attention heads, are the same ten heads repeated in every layer? Can additional heads replace layers, or can additional layers replace heads? What does the FFN do?
+
+**Assistant:**
+
+A model may have ten heads in every layer, but they are not the same learned heads reused across layers. Every layer has its own Q, K, V, and output-projection parameters. The roles of the heads emerge during training rather than being assigned manually.
+
+Heads and layers provide different forms of computation. The heads within one layer work in parallel on the same incoming residual state. They can examine different relationships at the same stage. Layers operate sequentially: the next layer receives the representation produced by the previous layer and can build on it.
+
+One layer with ten heads is therefore like ten investigations happening during one round. Ten layers provide ten successive rounds. Parallel investigations cannot generally replace successive transformations.
+
+The model width is usually divided among the heads. If `d_model = 1,000` and there are ten heads, each head might have a width of 100. If the overall model width remains fixed and the number of heads increases to twenty, each head may become narrower rather than the model automatically gaining more total capacity.
+
+---
+
+## The FFN’s role after attention
+
+**User:**
+
+Is the FFN there to work with the residual stream after the attention heads do their job? What is it transforming?
+
+**Assistant:**
+
+Yes. Attention communicates between token positions and writes an update into the residual stream. The FFN receives that updated stream and transforms the features now present inside each token’s vector.
+
+The FFN does not directly move information between positions. It applies the same learned transformation independently to each position. Attention may bring information about “dog” into the vector for “bit”; the FFN at “bit” can then respond to the resulting combination of features and write another update into the residual stream.
+
+A basic FFN is written as:
+
+```text
+FFN(x) = W₂ · activation(W₁x)
+```
+
+`W₁` usually expands the vector into a larger hidden space, the activation introduces nonlinear behavior, and `W₂` projects it back to the residual-stream width. The FFN output is an update:
+
+```text
+new x = x + FFN(x)
+```
+
+---
+
+## What W₁ and W₂ are, and why the width may be 512
+
+**User:**
+
+What are W₁ and W₂? Why did the example use 512?
+
+**Assistant:**
+
+`W₁` and `W₂` are learned FFN weight matrices, analogous to the learned Q/K/V projection matrices in attention. They are initialized before training and adjusted through backpropagation.
+
+The number 512 was only an example model width. It is not a universal transformer value. In this toy model, `d_model = 4`. Real models may use widths such as 768, 4,096, or 8,192.
+
+For a model with `d_model = 512` and an FFN hidden width of 2,048, the shapes could be:
+
+```text
+token vector:       1 × 512
+W₁:                512 × 2048
+hidden vector:       1 × 2048
+W₂:               2048 × 512
+FFN output:          1 × 512
+```
+
+The output must return to width 512 so it can be added to the 512-number residual vector.
+
+---
+
+## One shared FFN per layer, applied to every token
+
+**User:**
+
+If there are ten tokens, are there ten parallel FFNs? How can the same W₁ and W₂ work for every token? Are the weights the same or different?
+
+**Assistant:**
+
+The ten positions are processed in parallel, but they do not have ten independently learned FFNs. One layer uses the same `W₁` and `W₂` for every token row. Different token vectors produce different outputs even though the transformation is shared.
+
+For ten positions with width 512, the implementation can process the entire matrix at once:
+
+```text
+10 × 512  →  10 × 2048  →  10 × 512
+```
+
+The weights are shared across token positions within one layer. They are not shared across transformer layers:
+
+```text
+Layer 1 uses W₁¹ and W₂¹ for every token.
+Layer 2 uses W₁² and W₂² for every token.
+```
+
+The number of heads and all matrix shapes are chosen by the model designers before training. Training learns the numerical values and the roles that emerge; it does not decide how many heads the architecture contains.
+
+---
+
+## Why the FFN uses nonlinear activation functions
+
+**User:**
+
+Is the FFN there to add nonlinear processing? Why is that useful, which functions are used, and how is the nonlinearity introduced?
+
+**Assistant:**
+
+Yes. `W₁` and `W₂` are linear transformations, but the activation placed between them is nonlinear:
+
+```text
+x
+→ xW₁ + b₁
+→ activation applied to each hidden number
+→ result projected through W₂
+```
+
+Without an activation, consecutive fixed linear transformations collapse into one fixed transformation:
+
+```text
+W₃(W₂(W₁x)) = (W₃W₂W₁)x = W_total x
+```
+
+The resulting matrix could still perform a large, complicated remix of features, but adding more purely linear layers would not expand the class of functions the network can represent. With biases, the stack similarly collapses into one affine transformation.
+
+A nonlinear activation allows the response to depend selectively on combinations of features. For example, let `a` mean that a verb feature is present and `b` mean that attention found a possible subject. The following operation responds only when both simplified binary features are present:
+
+```text
+z = a + b - 1.5
+output = 2 × ReLU(z)
+```
+
+The calculation is:
+
+```text
+a=0, b=0 → output 0
+a=1, b=0 → output 0
+a=0, b=1 → output 0
+a=1, b=1 → output 1
+```
+
+ReLU is:
+
+```text
+ReLU(z) = max(0, z)
+```
+
+Other common activations include GELU and SiLU. Many modern decoder models use SwiGLU, which uses two projections and an elementwise product:
+
+```text
+hidden = SiLU(xW_gate) ⊙ (xW_up)
+output = hidden W_down
+```
+
+Nonlinear networks can approximate broad classes of complicated functions when they have sufficient capacity. This does not mean a finite network can reproduce every imaginable function exactly or that training is guaranteed to find one.
+
+---
+
+## The precise nonlinearity in attention and softmax
+
+**User:**
+
+Attention ultimately calculates a weighted sum such as `0.3V₁ + 0.2V₂ + 0.5V₃`. Is that not linear? Is softmax merely normalization? Is softmax nonlinear, or is A nonlinear?
+
+**Assistant:**
+
+Once the attention matrix `A` has been calculated and held fixed, `AV` is a linear weighted sum in V. That part of the intuition is correct.
+
+The complete attention mapping is nevertheless nonlinear with respect to the original input because the coefficients are not fixed. They are recalculated from the current X:
+
+```text
+Q(X) = XW_Q
+K(X) = XW_K
+V(X) = XW_V
+
+A(X) = softmax(Q(X)K(X)ᵀ / √d_head)
+C(X) = A(X)V(X)
+```
+
+Q and K both depend on X, so multiplying them is already an input-dependent, bilinear operation. It resembles the difference between the fixed-coefficient function `3x` and the input-dependent product `x × x = x²`.
+
+Softmax is itself a nonlinear function. For example:
+
+```text
+softmax([1, 2]) ≈ [0.269, 0.731]
+softmax([2, 4]) ≈ [0.119, 0.881]
+```
+
+Doubling the input did not double the output. Softmax exponentiates the scores and normalizes them, so it creates competition while producing positive numbers that sum to one.
+
+A completed attention matrix is simply a matrix of numbers, so calling the fixed matrix itself “nonlinear” is imprecise. The mappings `S → A` and `X → A(X)` are nonlinear. After that particular A is fixed, `A × V` is linear in V.
+
+The FFN’s activation adds another, different form of nonlinearity. Attention primarily performs input-dependent routing and mixing between positions. The FFN performs high-capacity nonlinear feature processing separately within each position.
+
+---
+
+## Intuition for features created or strengthened by the FFN
+
+**User:**
+
+What new features does the FFN add? Can you give an English intuition?
+
+**Assistant:**
+
+The features are learned, distributed numerical patterns rather than predefined English labels. An intuitive description is that attention gathers relevant notes onto a token’s desk, while the FFN reads the notes together and draws a useful local conclusion.
+
+At the “bit” position, attention might make information roughly corresponding to these ideas available:
+
+```text
+current word: bit
+earlier subject: dog
+bit is being used as a verb
+the sentence may continue
+```
+
+The FFN may respond to that combination by strengthening an internal pattern related to an expected object or likely continuation.
+
+For “He sat beside the river bank,” attention can bring “river” information into the representation of “bank.” The FFN can respond to the combined context by strengthening the geographical sense and suppressing the financial sense.
+
+A new feature does not require adding another coordinate. The model width stays fixed. `W₂` writes a distributed pattern across the existing residual-stream coordinates. The FFN may strengthen an existing feature, suppress one, or construct a useful combination from features accumulated through attention and earlier layers.
